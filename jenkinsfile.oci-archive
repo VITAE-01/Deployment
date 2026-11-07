@@ -63,7 +63,7 @@ pipeline {
                         if (tag == 'latest') {
                             error "Image '${src}' uses the 'latest' tag. Specify a pinned version instead."
                         }
-                        def dest = "${name}_${tag}_${env.BUILD_NUMBER}.tar"
+                        def dest = "${name}_${tag}-${env.BUILD_NUMBER}.tar"
 
                         branches["${name}:${tag}"] = {
                             stage("Archive ${name}:${tag}") {
