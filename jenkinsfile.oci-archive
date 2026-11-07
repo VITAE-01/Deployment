@@ -1,0 +1,111 @@
+def parseImages(String raw) {
+    def images = (raw ?: '').split(',').collect { it.trim() }.findAll { it }.unique()
+    if (images.isEmpty()) {
+        throw new IllegalArgumentException('IMAGES parameter is empty')
+    }
+    return images
+}
+
+pipeline {
+    agent { label 'oci-archive' }
+
+    options {
+        timestamps()
+        buildDiscarder logRotator(artifactDaysToKeepStr: '3', artifactNumToKeepStr: '3', daysToKeepStr: '', numToKeepStr: '3')
+        timeout(time: 2, unit: 'HOURS')
+    }
+    
+
+    parameters {
+        text(
+            name: 'IMAGES',
+            defaultValue: 'docker.io/sonatype/nexus3:3.98.0-ubi, docker.io/library/nginx:1.28-alpine',
+            description: 'Separate images by commas e.g. Example: docker.io/sonatype/nexus3:3.98.0-ubi, docker.io/library/nginx:1.28-alpine'
+        )
+        string(name: 'TARGET_OS', defaultValue: 'linux', trim: true,
+               description: 'OS of the image variant to pull (skopeo --override-os).')
+        string(name: 'TARGET_ARCH', defaultValue: 'amd64', trim: true,
+               description: 'Architecture of the image variant to pull (skopeo --override-arch).')
+        string(name: 'RETRY_TIMES', defaultValue: '3', trim: true,
+               description: 'Number of retries.')
+        booleanParam(name: 'ARCHIVE_ARTIFACTS', defaultValue: false,
+                description: 'Publish the OCI archive .tar files as artifacts.')
+        string(name: 'AUTOMATION_BRANCH', defaultValue: 'feature/aa/oci-archives', trim: true,
+               description: 'Branch of the automation repository to use for this build.')
+    }
+
+    environment {
+        OUT = "${WORKSPACE}/oci-archive"
+    }
+
+    stages {
+        stage('Validate package') {
+            steps {
+                sh '''
+                    command -v skopeo >/dev/null || { echo "ERROR: skopeo not found on jenkins agent"; exit 1; }
+                '''
+            }
+        }
+
+        stage('Archive images') {
+            steps {
+                sh 'rm -rf "$OUT" && mkdir -p "$OUT"'
+                script {
+                    def branches = [:]
+                    for (ref in parseImages(params.IMAGES)) {
+                        def src = ref
+                        def last = src.tokenize('/').last()
+                        if (!last.contains(':') || last.endsWith(':')) {
+                            error "Image '${src}' has no tag. Specify a version tag instead of using the default 'latest' tag."
+                        }
+                        def name = last.substring(0, last.lastIndexOf(':'))
+                        def tag  = last.substring(last.lastIndexOf(':') + 1)
+                        if (tag == 'latest') {
+                            error "Image '${src}' uses the 'latest' tag. Specify a pinned version instead."
+                        }
+                        def dest = "${name}_${tag}-${env.BUILD_NUMBER}.tar"
+
+                        branches["${name}:${tag}"] = {
+                            stage("Archive ${name}:${tag}") {
+                                withEnv(["SRC=${src}", "DEST=${dest}"]) {
+                                    sh '''
+                                        set -eu
+                                        echo ">> $SRC -> $OUT/$DEST"
+                                        skopeo copy --retry-times "$RETRY_TIMES" \
+                                            --override-os "$TARGET_OS" \
+                                            --override-arch "$TARGET_ARCH" \
+                                            "docker://$SRC" \
+                                            "oci-archive:$OUT/$DEST"
+                                        skopeo inspect --format '{{.Digest}} {{.Os}}/{{.Architecture}}' "oci-archive:$OUT/$DEST"
+                                    '''
+                                }
+                            }
+                        }
+                    }
+                    parallel branches
+                }
+            }
+        }
+
+    }
+
+    post {
+        success {
+            script {
+                if (params.ARCHIVE_ARTIFACTS) {
+                    archiveArtifacts artifacts: 'oci-archive/*.tar', fingerprint: true
+                }
+            }
+        }
+        cleanup {
+            script {
+                try {
+                    cleanWs()
+                } catch (err) {
+                    echo "cleanWs unavailable (${err}); falling back to deleteDir()"
+                    deleteDir()
+                }
+            }
+        }
+    }
+}
