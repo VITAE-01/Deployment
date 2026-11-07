@@ -28,7 +28,7 @@ pipeline {
                description: 'Architecture of the image variant to pull (skopeo --override-arch).')
         string(name: 'RETRY_TIMES', defaultValue: '3', trim: true,
                description: 'Number of retries.')
-        booleanParam(name: 'ARCHIVE_ARTIFACTS', defaultValue: true,
+        booleanParam(name: 'ARCHIVE_ARTIFACTS', defaultValue: false,
                 description: 'Publish the OCI archive .tar files as artifacts.')
         string(name: 'AUTOMATION_BRANCH', defaultValue: 'feature/aa/oci-archives', trim: true,
                description: 'Branch of the automation repository to use for this build.')
@@ -66,17 +66,19 @@ pipeline {
                         def dest = "${name}_${tag}_${env.BUILD_NUMBER}.tar"
 
                         branches["${name}:${tag}"] = {
-                            withEnv(["SRC=${src}", "DEST=${dest}"]) {
-                                sh '''
-                                    set -eu
-                                    echo ">> $SRC -> $OUT/$DEST"
-                                    skopeo copy --retry-times "$RETRY_TIMES" \
-                                        --override-os "$TARGET_OS" \
-                                        --override-arch "$TARGET_ARCH" \
-                                        "docker://$SRC" \
-                                        "oci-archive:$OUT/$DEST"
-                                    skopeo inspect --format '{{.Digest}} {{.Os}}/{{.Architecture}}' "oci-archive:$OUT/$DEST"
-                                '''
+                            stage("Archive ${name}:${tag}") {
+                                withEnv(["SRC=${src}", "DEST=${dest}"]) {
+                                    sh '''
+                                        set -eu
+                                        echo ">> $SRC -> $OUT/$DEST"
+                                        skopeo copy --retry-times "$RETRY_TIMES" \
+                                            --override-os "$TARGET_OS" \
+                                            --override-arch "$TARGET_ARCH" \
+                                            "docker://$SRC" \
+                                            "oci-archive:$OUT/$DEST"
+                                        skopeo inspect --format '{{.Digest}} {{.Os}}/{{.Architecture}}' "oci-archive:$OUT/$DEST"
+                                    '''
+                                }
                             }
                         }
                     }
