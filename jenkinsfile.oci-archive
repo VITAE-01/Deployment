@@ -28,14 +28,14 @@ pipeline {
                description: 'Architecture of the image variant to pull (skopeo --override-arch).')
         string(name: 'RETRY_TIMES', defaultValue: '3', trim: true,
                description: 'Number of retries.')
-        booleanParam(name: 'ARCHIVE_ARTIFACTS', defaultValue: false,
-                description: 'Publish the OCI archive .tar files as artifacts.')
+        booleanParam(name: 'TLS_VERIFY', defaultValue: false,
+                description: 'Verify Nexus registry TLS certificate.')
         string(name: 'AUTOMATION_BRANCH', defaultValue: 'feature/aa/oci-archives', trim: true,
                description: 'Branch of the automation repository to use for this build.')
     }
 
     environment {
-        OUT = "${WORKSPACE}/oci-archive"
+        AUTH_FILE = "${WORKSPACE}/.nexus-auth.json"
     }
 
     stages {
@@ -47,9 +47,19 @@ pipeline {
             }
         }
 
-        stage('Archive images') {
+        stage('Push images') {
             steps {
-                sh 'rm -rf "$OUT" && mkdir -p "$OUT"'
+                withCredentials([usernamePassword(credentialsId: 'jenkins-nexus',
+                                                  usernameVariable: 'NEXUS_USER',
+                                                  passwordVariable: 'NEXUS_PASS')]) {
+                    sh '''
+                        set -eu
+                        printf '%s' "$NEXUS_PASS" | skopeo login --authfile "$AUTH_FILE" \
+                            --tls-verify="$TLS_VERIFY" \
+                            --username "$NEXUS_USER" --password-stdin \
+                            "$NEXUS_REGISTRY:$REGISTRY_PORT"
+                    '''
+                }
                 script {
                     def branches = [:]
                     for (ref in parseImages(params.IMAGES)) {
@@ -63,20 +73,31 @@ pipeline {
                         if (tag == 'latest') {
                             error "Image '${src}' uses the 'latest' tag. Specify a pinned version instead."
                         }
-                        def dest = "${name}_${tag}-${env.BUILD_NUMBER}.tar"
+
+                        def segs = src.tokenize('/')
+                        if (segs.size() > 1 && (segs[0].contains('.') || segs[0].contains(':') || segs[0] == 'localhost')) {
+                            segs = segs.drop(1)
+                        }
+                        def repoPath = (segs.take(segs.size() - 1) + [name]).join('/')
+                        def dest = "${env.NEXUS_REGISTRY}:${env.REGISTRY_PORT}/${repoPath}:${tag}"
 
                         branches["${name}:${tag}"] = {
-                            stage("Archive ${name}:${tag}") {
+                            stage("Push ${name}:${tag}") {
                                 withEnv(["SRC=${src}", "DEST=${dest}"]) {
                                     sh '''
                                         set -eu
-                                        echo ">> $SRC -> $OUT/$DEST"
+                                        echo ">> $SRC -> $DEST"
                                         skopeo copy --retry-times "$RETRY_TIMES" \
                                             --override-os "$TARGET_OS" \
                                             --override-arch "$TARGET_ARCH" \
+                                            --dest-authfile "$AUTH_FILE" \
+                                            --dest-tls-verify="$TLS_VERIFY" \
                                             "docker://$SRC" \
-                                            "oci-archive:$OUT/$DEST"
-                                        skopeo inspect --format '{{.Digest}} {{.Os}}/{{.Architecture}}' "oci-archive:$OUT/$DEST"
+                                            "docker://$DEST"
+                                        skopeo inspect --authfile "$AUTH_FILE" \
+                                            --tls-verify="$TLS_VERIFY" \
+                                            --format '{{.Digest}} {{.Os}}/{{.Architecture}}' \
+                                            "docker://$DEST"
                                     '''
                                 }
                             }
@@ -90,14 +111,12 @@ pipeline {
     }
 
     post {
-        success {
-            script {
-                if (params.ARCHIVE_ARTIFACTS) {
-                    archiveArtifacts artifacts: 'oci-archive/*.tar', fingerprint: true
-                }
-            }
-        }
         cleanup {
+            sh '''
+                if [ -f "$AUTH_FILE" ]; then
+                    skopeo logout --authfile "$AUTH_FILE" "$NEXUS_REGISTRY:$REGISTRY_PORT" || true
+                fi
+            '''
             script {
                 try {
                     cleanWs()
