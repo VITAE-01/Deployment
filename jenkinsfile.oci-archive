@@ -19,7 +19,7 @@ pipeline {
     parameters {
         text(
             name: 'IMAGES',
-            defaultValue: 'docker.io/sonatype/nexus3:3.98.0-ubi, docker.io/nginx:1.31.8-alpine', 'docker.io/jenkins/jenkins:2.589-rhel-ubi9-jdk21'
+            defaultValue: 'docker.io/sonatype/nexus3:3.98.0-ubi, docker.io/nginx:1.31.8-alpine, docker.io/jenkins/jenkins:2.589-rhel-ubi9-jdk21'
             description: 'Separate images by commas e.g. Example: docker.io/sonatype/nexus3:3.98.0-ubi, docker.io/library/nginx:1.28-alpine'
         )
         string(name: 'TARGET_OS', defaultValue: 'linux', trim: true,
