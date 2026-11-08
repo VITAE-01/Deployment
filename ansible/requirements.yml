@@ -1,0 +1,7 @@
+# Collections mirrored from galaxy.ansible.com into local NEXUS GALAXY server.
+# Pin collection version and ensure it's supported by RPM ansible-core installed on host.
+collections:
+  - name: containers.podman
+    version: "1.18.0"
+  - name: community.mysql
+    version: "3.16.1"

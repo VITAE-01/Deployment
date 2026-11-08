@@ -1,0 +1,114 @@
+def ansiblePython() {
+    return '"$(awk \'NR==1{sub(/^#!/,""); print ($1 ~ /env$/ ? $2 : $1); exit}\' "$(command -v ansible-galaxy)")"'
+}
+
+pipeline {
+    agent { label 'galaxy-archive' }
+
+    options {
+        timestamps()
+        buildDiscarder logRotator(artifactDaysToKeepStr: '3', artifactNumToKeepStr: '3', daysToKeepStr: '', numToKeepStr: '3')
+        timeout(time: 1, unit: 'HOURS')
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        REQUIREMENTS        = 'ansible/requirements.yml'
+        HELPER              = 'ansible/galaxy_mirror.py'
+        DIST                = "${WORKSPACE}/dist"
+        LOCKFILE            = "${WORKSPACE}/dist/requirements.lock.yml"
+        UPSTREAM_GALAXY     = 'https://galaxy.ansible.com/'
+        TARGET_ANSIBLE_CORE = '2.14.18'
+        TLS_VERIFY          = 'false'
+
+        ANSIBLE_GALAXY_SERVER_LIST                 = 'nexus'
+        ANSIBLE_GALAXY_SERVER_NEXUS_URL            = "${NEXUS_GALAXY}"
+        ANSIBLE_GALAXY_SERVER_NEXUS_VALIDATE_CERTS = "${TLS_VERIFY}"
+        ANSIBLE_NOCOLOR                            = '1'
+    }
+
+    stages {
+        stage('Validate') {
+            steps {
+                sh """
+                    set -eu
+                    command -v ansible-galaxy >/dev/null || { echo "ERROR: ansible-galaxy not found on jenkins agent"; exit 1; }
+                    [ -n "\${NEXUS_GALAXY:-}" ] || { echo "ERROR: NEXUS_GALAXY is not defined"; exit 1; }
+                    ansible-galaxy --version | head -1
+                    ${ansiblePython()} "\$HELPER" validate "\$REQUIREMENTS"
+                """
+            }
+        }
+
+        stage('Resolve & download') {
+            steps {
+                sh """
+                    set -eu
+                    rm -rf "\$DIST"
+                    ansible-galaxy collection download -r "\$REQUIREMENTS" -p "\$DIST" -s "\$UPSTREAM_GALAXY"
+                    ${ansiblePython()} "\$HELPER" lock "\$REQUIREMENTS" "\$DIST" "\$LOCKFILE"
+                    cat "\$LOCKFILE"
+                """
+                archiveArtifacts artifacts: 'dist/requirements.lock.yml', fingerprint: true
+            }
+        }
+
+        stage('Version compatibility check') {
+            steps {
+                sh "${ansiblePython()} \"\$HELPER\" gate \"\$DIST\" \"\$TARGET_ANSIBLE_CORE\""
+            }
+        }
+
+        stage('Publish to Nexus') {
+            steps {
+                withCredentials([string(credentialsId: 'nexus-galaxy-token',
+                                        variable: 'ANSIBLE_GALAXY_SERVER_NEXUS_TOKEN')]) {
+                    sh """
+                        set -eu
+                        certs=\$([ "\$TLS_VERIFY" = true ] || echo --ignore-certs)
+                        probe=\$(mktemp -d)
+                        trap 'rm -rf "\$probe"' EXIT
+                        ${ansiblePython()} "\$HELPER" list "\$DIST" | while read -r tgz fqcn version; do
+                            if ansible-galaxy collection download "\$fqcn:==\$version" --no-deps \
+                                    -s nexus \$certs -p "\$probe" >/dev/null 2>&1; then
+                                echo ">> \$fqcn \$version already exists in Nexus"
+                                continue
+                            fi
+                            echo ">> publishing \$fqcn \$version"
+                            ansible-galaxy collection publish "\$tgz" -s nexus \$certs
+                        done
+                    """
+                }
+            }
+        }
+
+        stage('Verify from Nexus') {
+            steps {
+                withCredentials([string(credentialsId: 'nexus-galaxy-token',
+                                        variable: 'ANSIBLE_GALAXY_SERVER_NEXUS_TOKEN')]) {
+                    sh '''
+                        set -eu
+                        certs=$([ "$TLS_VERIFY" = true ] || echo --ignore-certs)
+                        rm -rf "$WORKSPACE/verify"
+                        ansible-galaxy collection install -r "$LOCKFILE" -p "$WORKSPACE/verify" \
+                            -s nexus $certs --force
+                        ansible-galaxy collection list -p "$WORKSPACE/verify"
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        cleanup {
+            script {
+                try {
+                    cleanWs()
+                } catch (err) {
+                    echo "cleanWs unavailable (${err}); falling back to deleteDir()"
+                    deleteDir()
+                }
+            }
+        }
+    }
+}
