@@ -68,14 +68,14 @@ pipeline {
                         certs=\$([ "\$TLS_VERIFY" = true ] || echo --ignore-certs)
                         probe=\$(mktemp -d)
                         trap 'rm -rf "\$probe"' EXIT
-                        ${ansiblePython()} "\$HELPER" list "\$DIST" | while read -r tgz fqcn version; do
+                        ${ansiblePython()} "\$HELPER" list "\$DIST" | while read -r fqcn version tgz; do
                             if ansible-galaxy collection download "\$fqcn:==\$version" --no-deps \
                                     -s nexus \$certs -p "\$probe" >/dev/null 2>&1; then
                                 echo ">> \$fqcn \$version already exists in Nexus"
                                 continue
                             fi
                             echo ">> publishing \$fqcn \$version"
-                            ansible-galaxy collection publish "\$tgz" -s nexus \$certs
+                            ansible-galaxy collection publish "\$DIST/\$tgz" -s nexus \$certs
                         done
                     """
                 }

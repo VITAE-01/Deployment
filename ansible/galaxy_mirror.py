@@ -7,7 +7,7 @@ Run with the interpreter ansible-galaxy uses, so PyYAML and packaging are availa
   lock     REQUIREMENTS DIST OUT   write FQCN lockfile from downloaded tarballs,
                                    warn on transitive deps not pinned in REQUIREMENTS
   gate     DIST TARGET_CORE        fail if any collection's requires_ansible excludes TARGET_CORE
-  list     DIST                    print "<tarball> <fqcn> <version>" per collection
+  list     DIST                    print "<fqcn> <version> <tarball filename>" per collection
 """
 import glob
 import json
@@ -114,7 +114,7 @@ def cmd_gate(dist, target):
 
 def cmd_list(dist):
     for c in tarballs(dist):
-        print(c['tarball'], c['fqcn'], c['version'])
+        print(c['fqcn'], c['version'], os.path.basename(c['tarball']))
 
 
 COMMANDS = {'validate': (cmd_validate, 1), 'lock': (cmd_lock, 3), 'gate': (cmd_gate, 2), 'list': (cmd_list, 1)}
